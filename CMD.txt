@@ -1,0 +1,2 @@
+netstat -ano | find "port : num"
+cmd 에서 작동중인 포트 확인하기
