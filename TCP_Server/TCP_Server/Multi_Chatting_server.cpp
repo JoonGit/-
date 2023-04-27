@@ -1,191 +1,227 @@
-#include <iostream>
-#include <winsock2.h>
-#pragma comment(lib, "ws2_32")
-#include <Windows.h>
-#include <list>
-//#include <iterator>
-
-/////////////////////////////////////////////////////////////////////////////////////////
-CRITICAL_SECTION	g_cs;			// 스레드 동기화 객체
-SOCKET				g_hSocket;		// 서버의 리슨 소켓
-std::list<SOCKET>	g_listClient;	// 연결된 클라이언트 소켓 리스트.
-
-/////////////////////////////////////////////////////////////////////////////////////////
-
-// 새로 연결된 클라이언트의 소켓을 리스트에 저장한다.
-BOOL AddUser(SOCKET hSocket)
-{
-	::EnterCriticalSection(&g_cs);		// 임계영역 시작
-	// *이 코드는 오직 한 스레드만 수행한다는 것이 보장된다!
-	g_listClient.push_back(hSocket);
-	::LeaveCriticalSection(&g_cs);		// 임계영역 끝
-
-	return TRUE;
-}
-
-/////////////////////////////////////////////////////////////////////////////////////////
-// 연결된 클라이언트 모두에게 메시지를 전송한다.
-void SendChattingMessage(char* pszParam)
-{
-	int nLength = strlen(pszParam);
-	std::list<SOCKET>::iterator it;
-
-	::EnterCriticalSection(&g_cs);		// 임계영역 시작
-	for (it = g_listClient.begin(); it != g_listClient.end(); ++it)
-	{
-		::send(*it, pszParam, sizeof(char) * (nLength + 1), 0);
-	}::LeaveCriticalSection(&g_cs);		// 임계영역 끝
-}
-
-/////////////////////////////////////////////////////////////////////////////////////////
-// Ctrl+c 이벤트를 감지하고 프로그램을 종료한다.
-BOOL CtrlHandeler(DWORD dwType)
-{
-	if (dwType == CTRL_C_EVENT)
-	{
-		std::list<SOCKET>::iterator it;
-
-		//연결된 모든 클라이언트 및 리슨 소켓을 닫고 프로그램을 종료한다.
-		::shutdown(g_hSocket, SD_BOTH);
-
-		::EnterCriticalSection(&g_cs);		// 임계영역 시작
-		for (it = g_listClient.begin(); it != g_listClient.end(); ++it)
-		{
-			std::cout << it._Getcont() << std::endl;
-			// 연결 리스트에 등록된 모든 정보를 삭제한다.
-			::closesocket(*it);
-		}
-		//
-		g_listClient.clear();
-		::LeaveCriticalSection(&g_cs);		// 임계영역 끝
-
-		puts("모든 클라이언트 연결을 종료했습니다.");
-		// 클라이언트와 통신하는 스레드들이 종료되기를 기다린다.
-		::Sleep(100);
-		::DeleteCriticalSection(&g_cs);
-		::closesocket(g_hSocket);
-
-		// 윈속 해제
-		::WSACleanup();
-		exit(0);
-		return TRUE;
-	}
-	return FALSE;
-}
-DWORD WINAPI ThreadFunction(LPVOID pParam)
-{
-	char szBuffer[128] = { 0 };
-	int nReceive = 0;
-	SOCKET hClient = (SOCKET)pParam;
-
-	printf("%d 클라이언트가 연결되었습니다 \n", hClient);
-
-	// 클라이언트로부터 문자열을 수신한다
-	while ((nReceive = ::recv(hClient, szBuffer, sizeof(szBuffer), 0)) > 0)
-	{
-		// 수신한 문자열을 그대로 반향(Echo)전송.
-		//::send(hClient, szBuffer, sizeof(szBuffer), 0);
-		puts(szBuffer);
-		SendChattingMessage(szBuffer);
-		memset(szBuffer, 0, sizeof(szBuffer));
-	}
-
-	printf("%d 클라이언트 연결이 끊겼습니다 \n", hClient);
-	::EnterCriticalSection(&g_cs);
-	g_listClient.remove(hClient);
-	::LeaveCriticalSection(&g_cs);
-
-	::closesocket(hClient);
-	return 0;
-}
-
-int main()
-{
-	// 원속 초기화
-	// 윈도우즈 소켓 라이브러리 초기화
-	WSADATA wsa = { 0 };
-	if (::WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
-	{
-		puts("ERROR: 원속을 초기화 할 수 없습니다.");
-		return 0;
-	}
-
-	// 임계영역 객체를 생성한다.
-	::InitializeCriticalSection(&g_cs);
-
-	// Ctrl+c 키를 눌렀을 때 이를 감지하고 처리할 함수를 등록한다.
-	if (::SetConsoleCtrlHandler(
-		(PHANDLER_ROUTINE)CtrlHandeler, TRUE) == FALSE)
-		puts("ERROR: Ctrl+c 처리기를 등록할 수 없습니다.");
-
-	// 1. 접속 대기 소겟 생성
-	g_hSocket = ::socket(AF_INET, SOCK_STREAM, 0);
-	if (g_hSocket == INVALID_SOCKET)
-	{
-		puts("ERROR: 접속 대기 소켓을 생성할 수 없습니다.");
-		return 0;
-	}
-	//// * 바인딩 전에 IP주소와 포트를 재사용하도록 소켓 옵션을 변경한다.
-	//BOOL bOption = TRUE;
-	//if (::setsockopt(hSocket, SOL_SOCKET,
-	//	SO_REUSEADDR, (char*)&bOption, sizeof(BOOL)) == SOCKET_ERROR)
-	//{
-	//	puts("ERROR: 소켓 옵션을 변경할 수 없습니다.");
-	//}
-
-	// 2. 포트 바인딩
-	SOCKADDR_IN svraddr = { 0 };
-	svraddr.sin_family = AF_INET;
-	svraddr.sin_port = htons(25000);
-	svraddr.sin_addr.S_un.S_addr = htonl(INADDR_ANY);
-	if (::bind(g_hSocket, (SOCKADDR*)&svraddr, sizeof(svraddr)) == SOCKET_ERROR)
-	{
-		puts("ERROR: 소켓에 IP주소와 포트를 바인드 할 수 없습니다.");
-		return 0;
-	}
-
-	// 3. 접속대기 상태로 전환
-	// server는 Listen 상태가 된다
-	if (::listen(g_hSocket, SOMAXCONN) == SOCKET_ERROR)
-	{
-		puts("ERROR: 리슨 상태로 전환할 수 없습니다.");
-		return 0;
-	}
-	puts("*** 채팅서버를 시작합니다. ***");
-
-
-	// 4. 클라이언트 접속 처리 및 대응
-	SOCKADDR_IN clientaddr = { 0 };
-	int nAddrLen = sizeof(clientaddr);
-	SOCKET hClient = 0;
-	DWORD dwThreadID = 0;
-	HANDLE hThread;
-
-	// 4.1 클라이언트 연결을 받아들이고 새로운 소켓 생성(개방)
-	while ((hClient = ::accept(g_hSocket,
-		(SOCKADDR*)&clientaddr,&nAddrLen)) != INVALID_SOCKET)
-	{
-		if (AddUser(hClient) == FALSE)
-		{
-			puts("ERROR : 더 이상 클라이언트 연결을 처리할 수 없습니다.");
-			CtrlHandeler(CTRL_C_EVENT);
-			break;
-		}
-		// 4.2 새 클라이언트와 통신하기 위한 스레드 생성
-		// 클라이언트 마다 스레드가 하나씩 생성된다
-		hThread = ::CreateThread(
-			NULL,				// 보안속성 상속
-			0,					// 스택 메모리는 기본크기(1MB)
-			ThreadFunction,		// 스래드로 실행할 함수
-			(LPVOID)hClient,	// 새로 생성된 클라이언트 소켓
-			0,					// 생성 플래그는 기본값 사용
-			&dwThreadID);		// 생성된 스레드 ID가 저장될 변수 주소
-
-		::CloseHandle(hThread);
-	}
-
-	puts("*** 채팅서버를 종료합니다. ***");
-	return 0;
-
-
-}
+//#include <iostream>
+//#include <winsock2.h>
+//#pragma comment(lib, "ws2_32")
+//#include <Windows.h>
+//#include <list>
+////#include <iterator>
+//
+///////////////////////////////////////////////////////////////////////////////////////////
+//CRITICAL_SECTION	g_cs;			// 스레드 동기화 객체
+//SOCKET				g_hSocket;		// 서버의 리슨 소켓
+//std::list<SOCKET>	g_listClient;	// 연결된 클라이언트 소켓 리스트.
+//
+///////////////////////////////////////////////////////////////////////////////////////////
+//
+//// 새로 연결된 클라이언트의 소켓을 리스트에 저장한다.
+//BOOL AddUser(SOCKET hSocket)
+//{
+//	::EnterCriticalSection(&g_cs);		// 임계영역 시작
+//	// *이 코드는 오직 한 스레드만 수행한다는 것이 보장된다!
+//	g_listClient.push_back(hSocket);
+//	::LeaveCriticalSection(&g_cs);		// 임계영역 끝
+//
+//	return TRUE;
+//}
+//
+///////////////////////////////////////////////////////////////////////////////////////////
+//// 연결된 클라이언트 모두에게 메시지를 전송한다.
+//void SendChattingMessage(char* pszParam)
+//{
+//	int nLength = strlen(pszParam);
+//	std::list<SOCKET>::iterator it;
+//
+//	::EnterCriticalSection(&g_cs);		// 임계영역 시작
+//	for (it = g_listClient.begin(); it != g_listClient.end(); ++it)
+//	{
+//		::send(*it, pszParam, sizeof(char) * (nLength + 1), 0);
+//	}
+//	::LeaveCriticalSection(&g_cs);		// 임계영역 끝
+//}
+//
+///////////////////////////////////////////////////////////////////////////////////////////
+//// Ctrl+c 이벤트를 감지하고 프로그램을 종료한다.
+//BOOL CtrlHandeler(DWORD dwType)
+//{
+//	if (dwType == CTRL_C_EVENT)
+//	{
+//		std::list<SOCKET>::iterator it;
+//
+//		//연결된 모든 클라이언트 및 리슨 소켓을 닫고 프로그램을 종료한다.
+//		::shutdown(g_hSocket, SD_BOTH);
+//
+//		::EnterCriticalSection(&g_cs);		// 임계영역 시작
+//		for (it = g_listClient.begin(); it != g_listClient.end(); ++it)
+//		{
+//			std::cout << it._Getcont() << std::endl;
+//			// 연결 리스트에 등록된 모든 정보를 삭제한다.
+//			::closesocket(*it);
+//		}
+//		//
+//		g_listClient.clear();
+//		::LeaveCriticalSection(&g_cs);		// 임계영역 끝
+//
+//		puts("모든 클라이언트 연결을 종료했습니다.");
+//		// 클라이언트와 통신하는 스레드들이 종료되기를 기다린다.
+//		::Sleep(100);
+//		::DeleteCriticalSection(&g_cs);
+//		::closesocket(g_hSocket);
+//
+//		// 윈속 해제
+//		::WSACleanup();
+//		exit(0);
+//		return TRUE;
+//	}
+//	return FALSE;
+//}
+//DWORD WINAPI ThreadFunction(LPVOID pParam)
+//{
+//	char szBuffer[128] = { 0 };
+//	int nReceive = 0;
+//	SOCKET hClient = (SOCKET)pParam;
+//
+//	printf("%d 클라이언트가 연결되었습니다 \n", hClient);
+//
+//	// 클라이언트로부터 문자열을 수신한다
+//	while ((nReceive = ::recv(hClient, szBuffer, sizeof(szBuffer), 0)) > 0)
+//	{
+//		puts(szBuffer);
+//		SendChattingMessage(szBuffer);
+//		memset(szBuffer, 0, sizeof(szBuffer));
+//	}
+//
+//	printf("%d 클라이언트 연결이 끊겼습니다 \n", hClient);
+//	::EnterCriticalSection(&g_cs);
+//	g_listClient.remove(hClient);
+//	::LeaveCriticalSection(&g_cs);
+//
+//	::closesocket(hClient);
+//	return 0;
+//}
+//
+//DWORD WINAPI StatCheck(LPVOID pParam)
+//{
+//
+//	char szBuffer[128] = "*** 연결을 확인합니다 ***";
+//	int nReceive = 0;
+//	SOCKET hClient = (SOCKET)pParam;
+//
+//	// 클라이언트로부터 문자열을 수신한다
+//	while ((nReceive = ::send(hClient, szBuffer, sizeof(szBuffer), 0)) > 0)
+//	{
+//		printf("%d 클라이언트 연결을 확인 합니다\n", hClient);
+//		puts(szBuffer);
+//		//SendChattingMessage(szBuffer);
+//		//memset(szBuffer, 0, sizeof(szBuffer));
+//		Sleep(10000);
+//	}
+//	printf("%d 클라이언트 연결이 확인되지 않습니다 \n", hClient);
+//	::EnterCriticalSection(&g_cs);
+//	g_listClient.remove(hClient);
+//	::LeaveCriticalSection(&g_cs);
+//
+//	::closesocket(hClient);
+//	return 0;
+//}
+//
+//int main()
+//{
+//	// 원속 초기화
+//	// 윈도우즈 소켓 라이브러리 초기화
+//	WSADATA wsa = { 0 };
+//	if (::WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
+//	{
+//		puts("ERROR: 원속을 초기화 할 수 없습니다.");
+//		return 0;
+//	}
+//
+//	// 임계영역 객체를 생성한다.
+//	::InitializeCriticalSection(&g_cs);
+//
+//	// Ctrl+c 키를 눌렀을 때 이를 감지하고 처리할 함수를 등록한다.
+//	if (::SetConsoleCtrlHandler(
+//		(PHANDLER_ROUTINE)CtrlHandeler, TRUE) == FALSE)
+//		puts("ERROR: Ctrl+c 처리기를 등록할 수 없습니다.");
+//
+//	// 1. 접속 대기 소겟 생성
+//	g_hSocket = ::socket(AF_INET, SOCK_STREAM, 0);
+//	if (g_hSocket == INVALID_SOCKET)
+//	{
+//		puts("ERROR: 접속 대기 소켓을 생성할 수 없습니다.");
+//		return 0;
+//	}
+//
+//	//// * 바인딩 전에 IP주소와 포트를 재사용하도록 소켓 옵션을 변경한다.
+//	//BOOL bOption = TRUE;
+//	//if (::setsockopt(hSocket, SOL_SOCKET,
+//	//	SO_REUSEADDR, (char*)&bOption, sizeof(BOOL)) == SOCKET_ERROR)
+//	//{
+//	//	puts("ERROR: 소켓 옵션을 변경할 수 없습니다.");
+//	//}
+//
+//	// 2. 포트 바인딩
+//	SOCKADDR_IN svraddr = { 0 };
+//	svraddr.sin_family = AF_INET;
+//	svraddr.sin_port = htons(25000);
+//	svraddr.sin_addr.S_un.S_addr = htonl(INADDR_ANY);
+//	if (::bind(g_hSocket, (SOCKADDR*)&svraddr, sizeof(svraddr)) == SOCKET_ERROR)
+//	{
+//		puts("ERROR: 소켓에 IP주소와 포트를 바인드 할 수 없습니다.");
+//		return 0;
+//	}
+//
+//	// 3. 접속대기 상태로 전환
+//	// server는 Listen 상태가 된다
+//	if (::listen(g_hSocket, SOMAXCONN) == SOCKET_ERROR)
+//	{
+//		puts("ERROR: 리슨 상태로 전환할 수 없습니다.");
+//		return 0;
+//	}
+//	puts("*** 채팅서버를 시작합니다. ***");
+//
+//
+//	// 4. 클라이언트 접속 처리 및 대응
+//	SOCKADDR_IN clientaddr = { 0 };
+//	int nAddrLen = sizeof(clientaddr);
+//	SOCKET hClient = 0;
+//	DWORD dwThreadID = 0;
+//	HANDLE hThread;
+//	HANDLE hCheckThread;
+//
+//	// 4.1 클라이언트 연결을 받아들이고 새로운 소켓 생성(개방)
+//	while ((hClient = ::accept(g_hSocket,
+//		(SOCKADDR*)&clientaddr,&nAddrLen)) != INVALID_SOCKET)
+//	{
+//		if (AddUser(hClient) == FALSE)
+//		{
+//			puts("ERROR : 더 이상 클라이언트 연결을 처리할 수 없습니다.");
+//			CtrlHandeler(CTRL_C_EVENT);
+//			break;
+//		}
+//		// 4.2 새 클라이언트와 통신하기 위한 스레드 생성
+//		// 클라이언트 마다 스레드가 하나씩 생성된다
+//		hThread = ::CreateThread(
+//			NULL,				// 보안속성 상속
+//			0,					// 스택 메모리는 기본크기(1MB)
+//			ThreadFunction,		// 스래드로 실행할 함수
+//			(LPVOID)hClient,	// 새로 생성된 클라이언트 소켓
+//			0,					// 생성 플래그는 기본값 사용
+//			&dwThreadID);		// 생성된 스레드 ID가 저장될 변수 주소
+//
+//		::CloseHandle(hThread);
+//
+//		//hCheckThread = ::CreateThread(
+//		//	NULL,				// 보안속성 상속
+//		//	0,					// 스택 메모리는 기본크기(1MB)
+//		//	StatCheck,		// 스래드로 실행할 함수
+//		//	(LPVOID)hClient,	// 새로 생성된 클라이언트 소켓
+//		//	0,					// 생성 플래그는 기본값 사용
+//		//	&dwThreadID);		// 생성된 스레드 ID가 저장될 변수 주소
+//
+//		//::CloseHandle(hCheckThread);
+//	}
+//
+//	puts("*** 채팅서버를 종료합니다. ***");
+//	return 0;
+//
+//
+//}

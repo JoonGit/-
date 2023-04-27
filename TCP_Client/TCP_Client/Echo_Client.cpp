@@ -18,6 +18,21 @@ DWORD WINAPI ThreadReceive(LPVOID pParam)
 	return 0;
 }
 
+DWORD WINAPI ThreadHertbeat(LPVOID pParam)
+{
+	SOCKET hSocket = (SOCKET)pParam;
+	char szBuffer[128] = { 0 };
+	char szText[128] = "연결되어 있습니다";
+	while (::recv(hSocket, szBuffer, sizeof(szBuffer), 0) > 0)
+	{
+		printf("*** %s\n", szBuffer);
+		//::send(hSocket, szText, sizeof(szText), 0);
+		memset(szBuffer, 0, sizeof(szBuffer));
+	}
+	//puts("상태 확인이 끝났습니다.");
+	return 1;
+}
+
 int main()
 {
 	// 원속 초기화
@@ -68,6 +83,14 @@ int main()
 		&dwThreadID);		//생성된 스레드ID가 저장될 변수주소
 	::CloseHandle(hThread);
 
+	//HANDLE hHertbitsThread = ::CreateThread(NULL,	
+	//	0,					
+	//	ThreadHertbeat,		
+	//	(LPVOID)hSocket,	
+	//	0,					
+	//	&dwThreadID);		
+	//::CloseHandle(hHertbitsThread);
+
 	// 3. 채팅 메시지 송 / 수신
 	char szBuffer[128] = { 0 };
 	puts("채팅을 시작합니다. 메시지를 입력하세요.\n");
@@ -79,17 +102,9 @@ int main()
 		if (strcmp(szBuffer, "EXIT") == 0) break;
 
 		// 사용자가 입력한 문자열을 서버에 전송한다.
-		
-		int i = 0;
-		while (i != 1000)
-		{
-			::send(hSocket, szBuffer, strlen(szBuffer) + 1, 0);
-			Sleep(1);
-			i++;
-		}
-		//memset(szBuffer, 0, sizeof(szBuffer));
-		//::recv(hSocket, szBuffer, sizeof(szBuffer), 0);
-		//printf("From server: %s\n", szBuffer);
+		::send(hSocket, szBuffer, strlen(szBuffer) + 1, 0);
+		memset(szBuffer, 0, sizeof(szBuffer));
+		printf("From server: %s\n", szBuffer);
 	}
 
 	// 4. 소켓을 닫고 종료
